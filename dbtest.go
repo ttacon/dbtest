@@ -7,12 +7,19 @@ import (
 	"strings"
 )
 
+// An Executor is a convenienve interface that covers both
+// sql.DB and sql.Tx from database/sql. It can be used to
+// allow either of those to be used interchangeable (bad idea),
+// but primarily it is used to transparently swap out a real db
+// connection for a deterministic pseudo-Executor for testing.
 type Executor interface {
 	Exec(query string, args ...interface{}) (sql.Result, error)
 	Query(query string, args ...interface{}) (SQLRows, error)
 	QueryRow(query string, args ...interface{}) SQLRow
 }
 
+// A TestExecutor can be used as an Executor, but can have
+// the results it will return predefined.
 type TestExecutor interface {
 	Executor
 	RegisterExec(id string, s sql.Result) TestExecutor
@@ -20,32 +27,47 @@ type TestExecutor interface {
 	RegisterQueryRow(id string, s SQLRow) TestExecutor
 }
 
-func ToExecutor(e Executor) Executor {
+// For being able to convert standard library executors to dbtest executors.
+type StdLibExecutor interface {
+	Exec(query string, args ...interface{}) (sql.Result, error)
+	Query(query string, args ...interface{}) (*sql.Rows, error)
+	QueryRow(query string, args ...interface{}) *sql.Row
+}
+
+// A convenience method for transforming a StdLibExecutor to an Executor.
+func ToExecutor(e StdLibExecutor) Executor {
 	return &executor{e}
 }
 
 type executor struct {
-	e Executor
+	e StdLibExecutor
 }
 
 func (e *executor) Exec(query string, args ...interface{}) (sql.Result, error) {
 	return e.e.Exec(query, args...)
 }
+
 func (e *executor) Query(query string, args ...interface{}) (SQLRows, error) {
 	return e.e.Query(query, args...)
 }
+
 func (e *executor) QueryRow(query string, args ...interface{}) SQLRow {
 	return e.e.QueryRow(query, args...)
 }
 
+// A convenience wrapper for sql.Row - as you can't really mock out
+// an "empty" struct.
 type SQLRow interface {
 	SQLScannable
 }
 
+// Because we're going to reuse it...
 type SQLScannable interface {
 	Scan(dest ...interface{}) error
 }
 
+// A convenienve wrapper for sql.Rows - as you can't really mock "filtered
+// or unexported fields."
 type SQLRows interface {
 	Close() error
 	Columns() ([]string, error)
@@ -65,6 +87,8 @@ type sqlResult struct {
 	lastInsertErr, rowsAffectedErr error
 }
 
+// Create a sql.Result that "had" the given lastInsertID and affected
+// the given number of rows.
 func SQLResult(lastInsertID, rowsAffected int64) sql.Result {
 	return sqlResult{
 		lastInsertID: lastInsertID,
@@ -72,6 +96,8 @@ func SQLResult(lastInsertID, rowsAffected int64) sql.Result {
 	}
 }
 
+// Same as SQLResult(), except we can specify certai errors to be
+// returned when either LastInsertId() or RowsAffected() are called.
 func SQLResultWErrors(lID, rAff int64, lIDErr, rAffErr error) sql.Result {
 	return sqlResult{
 		lastInsertID:    lID,
@@ -89,6 +115,7 @@ func (s sqlResult) RowsAffected() (int64, error) {
 	return s.rowsAffected, s.rowsAffectedErr
 }
 
+// Returns a TestExecutor which we can attach our predetermined results to.
 func NewTestExecutor() TestExecutor {
 	return &testExecutor{
 		results: make(map[string]sql.Result),
@@ -134,6 +161,7 @@ func (t *testExecutor) RegisterQueryRow(id string, s SQLRow) TestExecutor {
 	return t
 }
 
+// NewSQLRow creates a new SQLRow with the given fields.
 func NewSQLRow(fields []interface{}) SQLRow {
 	return &sqlRow{
 		fields: fields,
@@ -163,6 +191,8 @@ func (s *sqlRow) Scan(dest ...interface{}) error {
 	return nil
 }
 
+// NewSQLRows creates a new SQLRows with the given column names and given
+// "SQLRow"s.
 func NewSQLRows(cols []string, rows []SQLRow) SQLRows {
 	return &sqlRows{
 		columns: cols,
@@ -205,7 +235,8 @@ func (s *sqlRows) Scan(dest ...interface{}) error {
 	return s.rows[s.currRow].Scan(dest...)
 }
 
-////////// for the lazy //////////
+// An OrderedTestExecutor is a simpler TestExecutor - it simple returns
+// sql.Results, "SQLRow"s and SQLRows in the order they were provided.
 type OrderedTestExecutor interface {
 	Executor
 	RegisterExec(sql.Result) OrderedTestExecutor
@@ -213,6 +244,7 @@ type OrderedTestExecutor interface {
 	RegisterQueryRow(SQLRow) OrderedTestExecutor
 }
 
+// NewOrderedTestExecutor returns a blank OrderedTestExecutor.
 func NewOrderedTestExecutor() OrderedTestExecutor {
 	return &orderedTestExctr{}
 }
@@ -232,6 +264,7 @@ func (o *orderedTestExctr) Exec(query string, args ...interface{}) (sql.Result, 
 	o.results = o.results[1:]
 	return next, nil
 }
+
 func (o *orderedTestExctr) Query(query string, args ...interface{}) (SQLRows, error) {
 	if len(o.rows) == 0 {
 		// TODO(ttacon): better error message?
@@ -241,6 +274,7 @@ func (o *orderedTestExctr) Query(query string, args ...interface{}) (SQLRows, er
 	o.rows = o.rows[1:]
 	return next, nil
 }
+
 func (o *orderedTestExctr) QueryRow(query string, args ...interface{}) SQLRow {
 	if len(o.row) == 0 {
 		// TODO(ttacon): better error message?

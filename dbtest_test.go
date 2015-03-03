@@ -1,6 +1,9 @@
 package dbtest
 
-import "testing"
+import (
+	"database/sql"
+	"testing"
+)
 
 func TestOrderedTestExecutorExec(t *testing.T) {
 	e := NewOrderedTestExecutor().
@@ -141,4 +144,9 @@ func TestOrderedTestExecutorQueryRow(t *testing.T) {
 	if string(data) != "HelloThur!" {
 		t.Error("got unexpected data back: ", string(data))
 	}
+}
+
+func TestWeCanUseStdLibExecutor(t *testing.T) {
+	var s *sql.DB
+	var _ Executor = ToExecutor(s)
 }
